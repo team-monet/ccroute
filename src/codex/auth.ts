@@ -3,11 +3,11 @@ import { codexTokenStore } from "../keychain"
 import { warn } from "../logger"
 
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
-const AUTH_BASE = "https://chatgpt.com"
-const TOKEN_ENDPOINT = "https://chatgpt.com/api/auth/token"
-const REDIRECT_PORT = 18766
-const REDIRECT_URI = `http://127.0.0.1:${REDIRECT_PORT}/callback`
-const SCOPE = "openid profile email"
+const AUTH_BASE = "https://auth.openai.com"
+const TOKEN_ENDPOINT = "https://auth.openai.com/oauth/token"
+const REDIRECT_PORT = 1455
+export const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}/auth/callback`
+const SCOPE = "openid profile email offline_access api.connectors.read api.connectors.invoke"
 const REFRESH_MARGIN_MS = 5 * 60 * 1000
 
 export interface CodexTokens {
@@ -55,7 +55,7 @@ export function generatePkce(): PkceChallenge {
 
 export function buildAuthorizeUrl(challenge: PkceChallenge, baseUrl?: string): string {
   const base = baseUrl || AUTH_BASE
-  const url = new URL("/api/auth/authorize", base)
+  const url = new URL("/oauth/authorize", base)
   url.searchParams.set("response_type", "code")
   url.searchParams.set("client_id", CLIENT_ID)
   url.searchParams.set("redirect_uri", REDIRECT_URI)
@@ -63,7 +63,9 @@ export function buildAuthorizeUrl(challenge: PkceChallenge, baseUrl?: string): s
   url.searchParams.set("code_challenge", challenge.challenge)
   url.searchParams.set("scope", SCOPE)
   url.searchParams.set("state", challenge.state)
-  url.searchParams.set("originator", "ccroute")
+  url.searchParams.set("originator", "codex_cli")
+  url.searchParams.set("id_token_add_organizations", "true")
+  url.searchParams.set("codex_cli_simplified_flow", "true")
   return url.toString()
 }
 
@@ -103,10 +105,10 @@ export function startCallbackServer(expectedState: string): Promise<{ code: stri
     try {
       server = Bun.serve({
         port: REDIRECT_PORT,
-        hostname: "127.0.0.1",
+        hostname: "localhost",
         fetch(req) {
           const url = new URL(req.url)
-          if (url.pathname !== "/callback") {
+          if (url.pathname !== "/auth/callback") {
             return new Response("Not found", { status: 404 })
           }
 
@@ -158,7 +160,7 @@ export function startCallbackServer(expectedState: string): Promise<{ code: stri
 }
 
 function tokenEndpointFor(baseUrl?: string): string {
-  return baseUrl ? `${baseUrl}/api/auth/token` : TOKEN_ENDPOINT
+  return baseUrl ? `${baseUrl.replace(/\/+$/, "")}/oauth/token` : TOKEN_ENDPOINT
 }
 
 function parseTokenResponse(data: Record<string, unknown>): CodexTokens {
@@ -197,8 +199,7 @@ export async function exchangeCode(code: string, verifier: string, baseUrl?: str
   })
 
   if (!response.ok) {
-    const body = await response.text().catch(() => "")
-    throw new Error(`Token exchange failed: ${response.status} ${response.statusText} ${body}`)
+    throw new Error(`Token exchange failed: ${response.status} ${response.statusText}`)
   }
 
   const data = await response.json() as Record<string, unknown>
@@ -218,8 +219,7 @@ export async function refreshAccessToken(refreshToken: string, baseUrl?: string)
   })
 
   if (!response.ok) {
-    const body = await response.text().catch(() => "")
-    throw new Error(`Token refresh failed: ${response.status} ${response.statusText} ${body}`)
+    throw new Error(`Token refresh failed: ${response.status} ${response.statusText}`)
   }
 
   const data = await response.json() as Record<string, unknown>

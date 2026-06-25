@@ -1,6 +1,6 @@
 node_modules/
-ccroute
-ccroute-*
+/ccroute
+/ccroute-*
 *.log
 .DS_Store
 .env

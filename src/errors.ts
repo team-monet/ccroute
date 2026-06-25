@@ -1,3 +1,10 @@
+export function redactSecrets(s: string): string {
+  return s
+    .replace(/eyJ[A-Za-z0-9._-]{10,}/g, "***REDACTED-JWT***")
+    .replace(/sk-[A-Za-z0-9_-]{6,}/g, "sk-***REDACTED***")
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer ***REDACTED***")
+}
+
 export function anthropicError(status: number, type: string, message: string): Response {
   return new Response(
     JSON.stringify({ type: "error", error: { type, message } }),

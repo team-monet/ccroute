@@ -1,5 +1,5 @@
 import type { CcrouteConfig } from "../config"
-import { anthropicError, anthropicStreamError } from "../errors"
+import { anthropicError, anthropicStreamError, redactSecrets } from "../errors"
 import { anthropicToResponses, injectCodexHeaders } from "./translate"
 import { reduceResponsesStream } from "./reducer"
 import { getValidToken, refreshAccessToken, saveTokens } from "./auth"
@@ -29,7 +29,7 @@ export async function handleCodexMessages(
   if (upstream.status === 401) {
     warn("Codex returned 401, force-refreshing token")
     try {
-      const newTokens = await refreshAccessToken(tokens.refreshToken, config.codex.baseUrl)
+      const newTokens = await refreshAccessToken(tokens.refreshToken)
       saveTokens(newTokens)
       injectCodexHeaders(headers, newTokens.accessToken, newTokens.chatgptAccountId)
       upstream = await fetchCodex(url, headers, upstreamBody)
@@ -39,7 +39,7 @@ export async function handleCodexMessages(
   }
   if (!upstream.ok) {
     const errBody = await upstream.text()
-    return anthropicError(upstream.status, "api_error", `Codex upstream error: ${errBody}`)
+    return anthropicError(upstream.status, "api_error", `Codex upstream error: ${redactSecrets(errBody)}`)
   }
   if (!upstream.body) {
     return anthropicError(502, "api_error", "Codex upstream returned no body")

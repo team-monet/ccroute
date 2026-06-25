@@ -26,7 +26,7 @@ async function main() {
   }
   const [cmd, sub, action, ...rest] = args
   try {
-    if (cmd === "serve") return await cli.cmdServe(rest)
+    if (cmd === "serve") return await cli.cmdServe(args.slice(1))
     if (cmd === "models") return await cli.cmdModels()
     if (cmd === "codex" && sub === "auth" && action === "login") return await cli.cmdCodexAuthLogin(rest)
     if (cmd === "codex" && sub === "auth" && action === "device") return await cli.cmdCodexAuthDevice(rest)
