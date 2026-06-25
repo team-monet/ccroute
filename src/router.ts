@@ -25,7 +25,8 @@ export const MODEL_CATALOG: ReadonlyMap<string, CatalogEntry> = new Map<string, 
 ])
 
 export type RouteResult =
-  | { kind: "resolved"; route: ResolvedRoute; originalModel: string }
+  | { kind: "resolved"; route: ResolvedRoute; originalModel: string; matchedAgent: string | null }
+  | { kind: "anthropic-passthrough"; originalModel: string }
   | { kind: "anthropic-reject"; message: string }
   | { kind: "unknown-model"; message: string }
   | { kind: "not-allowed"; message: string }
@@ -79,6 +80,7 @@ export function resolveRoute(modelId: string, systemBlocks: unknown[], config: C
         endpointPath: resolveEndpoint(subagent.upstream, subagent.model),
       },
       originalModel: modelId,
+      matchedAgent: subagent.match,
     }
   }
 
@@ -92,6 +94,7 @@ export function resolveRoute(modelId: string, systemBlocks: unknown[], config: C
           endpointPath: resolveEndpoint(route.upstream, route.model),
         },
         originalModel: modelId,
+        matchedAgent: null,
       }
     }
   }
@@ -106,6 +109,7 @@ export function resolveRoute(modelId: string, systemBlocks: unknown[], config: C
         endpointPath: catalogEntry.endpointPath,
       },
       originalModel: modelId,
+      matchedAgent: null,
     }
   }
 
@@ -125,10 +129,14 @@ export function resolveRoute(modelId: string, systemBlocks: unknown[], config: C
         endpointPath: "/backend-api/codex/responses",
       },
       originalModel: modelId,
+      matchedAgent: null,
     }
   }
 
   if (ANTHROPIC_PATTERN.test(modelId) || ANTHROPIC_KEYWORDS.test(modelId)) {
+    if (config.anthropic.passthrough) {
+      return { kind: "anthropic-passthrough", originalModel: modelId }
+    }
     return {
       kind: "anthropic-reject",
       message: anthropicModelRejectMessage(modelId),

@@ -41,12 +41,12 @@ describe("anthropicToResponses", () => {
     expect(result.reasoning).toEqual({ effort: "xhigh" })
   })
 
-  test("maps max_tokens to max_output_tokens", () => {
+  test("does not send max_output_tokens even when max_tokens is provided", () => {
     const result = anthropicToResponses(
       { messages: [], max_tokens: 100 },
       "x"
     )
-    expect(result.max_output_tokens).toBe(100)
+    expect(result.max_output_tokens).toBeUndefined()
   })
 
   test("translates multiple text blocks to separate input_text items", () => {

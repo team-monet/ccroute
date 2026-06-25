@@ -125,9 +125,6 @@ export function anthropicToResponses(
     }
   }
 
-  if (b.max_tokens !== undefined) {
-    result.max_output_tokens = b.max_tokens
-  }
   if (b.temperature !== undefined) {
     result.temperature = b.temperature
   }

@@ -33,13 +33,41 @@ describe("resolveRoute", () => {
     }
   })
 
-  test("claude-sonnet-4-6 is anthropic-reject", () => {
+  test("claude-sonnet-4-6 is anthropic-passthrough when passthrough enabled (default)", () => {
     const result = resolveRoute("claude-sonnet-4-6", [], defaultConfig())
+    expect(result.kind).toBe("anthropic-passthrough")
+    if (result.kind === "anthropic-passthrough") {
+      expect(result.originalModel).toBe("claude-sonnet-4-6")
+    }
+  })
+
+  test("claude-opus-4-8 is anthropic-passthrough (matches claude- prefix)", () => {
+    const result = resolveRoute("claude-opus-4-8", [], defaultConfig())
+    expect(result.kind).toBe("anthropic-passthrough")
+    if (result.kind === "anthropic-passthrough") {
+      expect(result.originalModel).toBe("claude-opus-4-8")
+    }
+  })
+
+  test("some-sonnet-model is anthropic-passthrough (matches sonnet keyword)", () => {
+    const result = resolveRoute("some-sonnet-model", [], defaultConfig())
+    expect(result.kind).toBe("anthropic-passthrough")
+    if (result.kind === "anthropic-passthrough") {
+      expect(result.originalModel).toBe("some-sonnet-model")
+    }
+  })
+
+  test("claude-opus-4-8 is anthropic-reject when passthrough disabled", () => {
+    const cfg = defaultConfig()
+    const noPassthrough = { ...cfg, anthropic: { ...cfg.anthropic, passthrough: false } }
+    const result = resolveRoute("claude-opus-4-8", [], noPassthrough)
     expect(result.kind).toBe("anthropic-reject")
   })
 
-  test("claude-opus-4-8 is anthropic-reject (matches opus)", () => {
-    const result = resolveRoute("claude-opus-4-8", [], defaultConfig())
+  test("claude-sonnet-4-6 is anthropic-reject when passthrough disabled", () => {
+    const cfg = defaultConfig()
+    const noPassthrough = { ...cfg, anthropic: { ...cfg.anthropic, passthrough: false } }
+    const result = resolveRoute("claude-sonnet-4-6", [], noPassthrough)
     expect(result.kind).toBe("anthropic-reject")
   })
 

@@ -6,7 +6,12 @@ export async function cmdServe(args: string[]): Promise<void> {
   let portOverride: number | undefined
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--port" && args[i + 1]) {
-      portOverride = parseInt(args[i + 1], 10)
+      const parsed = parseInt(args[i + 1], 10)
+      if (Number.isNaN(parsed) || parsed <= 0) {
+        process.stderr.write("error: --port must be a positive integer\n")
+        process.exit(1)
+      }
+      portOverride = parsed
       i++
     }
   }
@@ -47,8 +52,10 @@ export async function cmdServe(args: string[]): Promise<void> {
   console.log(`Set your Claude Code proxy:`)
   console.log(`  export ANTHROPIC_BASE_URL=http://127.0.0.1:${config.port}`)
   console.log("")
-  console.log("WARNING: This proxy does not support Anthropic models.")
-  console.log("Claude Code will reach Anthropic directly for claude-* models.")
+  console.log("claude-* requests pass through to " + config.anthropic.baseUrl + " (set [anthropic] passthrough=false to disable).")
+  if (config.anthropic.passthrough && config.anthropic.baseUrl !== "https://api.anthropic.com") {
+    console.log(`WARNING: anthropic.baseUrl is ${config.anthropic.baseUrl} — your Anthropic credentials will be forwarded there, not to api.anthropic.com.`)
+  }
   console.log("")
 
   const server = startServer(config)
@@ -64,7 +71,7 @@ export async function cmdServe(args: string[]): Promise<void> {
 }
 
 export async function cmdCodexAuthLogin(_args: string[]): Promise<void> {
-  const { generatePkce, buildAuthorizeUrl, startCallbackServer, exchangeCode, saveTokens, hasTokens } = await import("./codex/auth")
+  const { generatePkce, buildAuthorizeUrl, startCallbackServer, exchangeCode, saveTokens, hasTokens, REDIRECT_URI } = await import("./codex/auth")
   if (hasTokens()) {
     console.log("Existing Codex auth found. Re-authenticating will overwrite.")
   }
@@ -80,7 +87,7 @@ export async function cmdCodexAuthLogin(_args: string[]): Promise<void> {
       Bun.spawnSync([opener, url], { stdin: "ignore", stdout: "ignore", stderr: "ignore" })
     } catch { /* ignore */ }
   }
-  console.log("Waiting for callback on http://127.0.0.1:18766/callback ...")
+  console.log(`Waiting for callback on ${REDIRECT_URI} ...`)
   const { code } = await startCallbackServer(pkce.state)
   console.log("Exchanging code for tokens...")
   const tokens = await exchangeCode(code, pkce.verifier)
@@ -124,9 +131,28 @@ export async function cmdCodexAuthLogout(): Promise<void> {
   console.log("✓ Codex auth tokens cleared.")
 }
 
-export async function cmdOpencodeAuthLogin(_args: string[]): Promise<void> {
-  console.log("OpenCode auth login not yet implemented")
-  process.exit(1)
+export async function cmdOpencodeAuthLogin(args: string[]): Promise<void> {
+  const fromArg = args[0] && args[0].trim() ? true : false
+  let key: string | null = fromArg ? args[0].trim() : null
+  if (!key) {
+    key = prompt("Enter your OpenCode Go API key (sk-...):")
+    if (key) key = key.trim()
+  }
+  if (!key) {
+    console.log("No API key provided.")
+    process.exit(1)
+  }
+  try {
+    const { setApiKey } = await import("./opencode/auth")
+    setApiKey(key)
+  } catch (err) {
+    console.log(err instanceof Error ? err.message : String(err))
+    process.exit(1)
+  }
+  if (fromArg) {
+    process.stderr.write("note: passing the key as an argument leaves it in your shell history; prefer the interactive prompt next time.\n")
+  }
+  console.log("✓ OpenCode API key stored.")
 }
 
 export async function cmdOpencodeAuthStatus(): Promise<void> {
@@ -149,8 +175,9 @@ export async function cmdOpencodeAuthStatus(): Promise<void> {
 }
 
 export async function cmdOpencodeAuthLogout(): Promise<void> {
-  console.log("OpenCode auth logout not yet implemented")
-  process.exit(1)
+  const { clearApiKey } = await import("./opencode/auth")
+  clearApiKey()
+  console.log("✓ OpenCode API key cleared.")
 }
 
 export async function cmdModels(): Promise<void> {

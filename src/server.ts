@@ -1,4 +1,4 @@
-import { anthropicError, anthropicStreamError } from "./errors"
+import { anthropicError, anthropicStreamError, redactSecrets } from "./errors"
 import { info } from "./logger"
 import type { CcrouteConfig, ResolvedRoute } from "./config"
 import { countRequestTokens } from "./token-counter"
@@ -49,6 +49,16 @@ async function handleMessages(req: Request, config: CcrouteConfig): Promise<Resp
       : []
 
   const route = resolveRoute(modelId, systemBlocks, config)
+  info("routed", {
+    agent: route.kind === "resolved" ? route.matchedAgent : null,
+    originalModel: modelId,
+    kind: route.kind,
+    upstream: route.kind === "resolved" ? route.route.upstream : "anthropic",
+    upstreamModel: route.kind === "resolved" ? route.route.upstreamModelId : modelId,
+  })
+  if (route.kind === "anthropic-passthrough") {
+    return handleAnthropicPassthrough(req, b, config)
+  }
   if (route.kind === "anthropic-reject") {
     return anthropicError(400, "invalid_request_error", route.message)
   }
@@ -79,7 +89,7 @@ async function handleOpencode(
     const baseUrl = config.opencode.baseUrl.replace(/\/+$/, "")
     const url = `${baseUrl}${route.endpointPath}`
     const headers = new Headers({
-      "authorization": `Bearer ${apiKey}`,
+      "x-api-key": apiKey,
       "content-type": "application/json",
       "anthropic-version": "2023-06-01",
       "accept": "text/event-stream",
@@ -93,7 +103,7 @@ async function handleOpencode(
     }
     if (!upstream.ok) {
       const errBody = await upstream.text()
-      return anthropicError(upstream.status, "api_error", `OpenCode upstream error: ${errBody}`)
+      return anthropicError(upstream.status, "api_error", `OpenCode upstream error: ${redactSecrets(errBody)}`)
     }
     if (!upstream.body) {
       return anthropicError(502, "api_error", "OpenCode upstream returned no body")
@@ -121,7 +131,7 @@ async function handleOpencode(
     }
     if (!upstream.ok) {
       const errBody = await upstream.text()
-      return anthropicError(upstream.status, "api_error", `OpenCode upstream error: ${errBody}`)
+      return anthropicError(upstream.status, "api_error", `OpenCode upstream error: ${redactSecrets(errBody)}`)
     }
     if (!upstream.body) {
       return anthropicError(502, "api_error", "OpenCode upstream returned no body")
@@ -134,6 +144,43 @@ async function handleOpencode(
   }
 
   return anthropicError(500, "api_error", `Unknown endpoint: ${route.endpointPath}`)
+}
+
+async function handleAnthropicPassthrough(
+  req: Request,
+  body: Record<string, unknown>,
+  config: CcrouteConfig,
+): Promise<Response> {
+  const url = `${config.anthropic.baseUrl.replace(/\/+$/, "")}/v1/messages`
+
+  const headers = new Headers()
+  const HOP_BY_HOP = new Set(["host", "content-length", "connection", "accept-encoding"])
+  for (const [key, value] of req.headers.entries()) {
+    if (!HOP_BY_HOP.has(key.toLowerCase())) {
+      headers.set(key, value)
+    }
+  }
+
+  let upstream: Response
+  try {
+    upstream = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) })
+  } catch (err) {
+    return anthropicError(502, "api_error", `Cannot reach Anthropic: ${err}`)
+  }
+
+  const STRIP_RESPONSE = new Set(["content-encoding", "content-length", "transfer-encoding", "connection", "set-cookie", "www-authenticate"])
+  const responseHeaders = new Headers()
+  for (const [key, value] of upstream.headers.entries()) {
+    if (!STRIP_RESPONSE.has(key.toLowerCase())) {
+      responseHeaders.set(key, value)
+    }
+  }
+  responseHeaders.set("cache-control", "no-cache")
+
+  return new Response(upstream.body, {
+    status: upstream.status,
+    headers: responseHeaders,
+  })
 }
 
 function transformOpenAIToAnthropic(

@@ -43,15 +43,40 @@ CCROUTE_LOCAL_BINARY=./ccroute bash install.sh
    export ANTHROPIC_BASE_URL=http://127.0.0.1:18765
    ```
 
-   **Important:** Do NOT set `ANTHROPIC_BASE_URL` to ccroute if you also want direct Anthropic access for your main conversation. Instead, configure model routing in Claude Code settings to send only specific subagents to ccroute.
+   Setting `ANTHROPIC_BASE_URL` globally is safe: `claude-*` requests pass straight through to the real Anthropic API by default, so your main conversation and any un-routed subagents reach Anthropic normally.
+
+## Running in the background (macOS)
+
+To keep ccroute running without a terminal — starting automatically at login and restarting if it ever crashes — install it as a launchd user agent with the helper script:
+
+```bash
+# authenticate at least one upstream first (the service exits without one)
+ccroute codex auth login
+ccroute opencode auth login
+
+./scripts/ccroute-service.sh install
+```
+
+The script auto-detects your `ccroute` binary, generates `~/Library/LaunchAgents/com.ccroute.proxy.plist`, and loads it. Manage the service with the other subcommands:
+
+```bash
+./scripts/ccroute-service.sh status      # running? + health check
+./scripts/ccroute-service.sh logs        # tail ~/Library/Logs/ccroute.log
+./scripts/ccroute-service.sh restart     # apply a rebuilt binary or edited config.toml
+./scripts/ccroute-service.sh uninstall   # stop and remove the service
+```
+
+Run `restart` after any change to the binary or `config.toml` — the service reads its config only at startup.
+
+> When replacing the binary at `~/.local/bin/ccroute`, `rm` the old file before copying the new one (`rm -f ~/.local/bin/ccroute && cp …`). Overwriting it in place while the service is running invalidates the binary's code signature on macOS, and new launches die with `Killed: 9` (exit 137).
 
 ## What ccroute does NOT do
 
-ccroute does not proxy Anthropic models — Claude Code reaches Anthropic directly for `claude-*` models. It does not auto-route your main conversation; you set the model in Claude Code settings. ccroute intercepts only the specific model IDs you direct to it via subagent routes or model overrides, or any subagent you explicitly route.
+ccroute does not translate Anthropic request/response bodies — `claude-*` requests are forwarded verbatim to the real Anthropic API and the response is streamed back as-is. It does not auto-route your main conversation; you configure routing via subagent routes or model overrides. ccroute intercepts only the specific model IDs you direct to it; everything else passes through to Anthropic transparently.
 
 ## Configuration
 
-The config file lives at `~/.config/ccroute/config.toml`. On first run, ccroute auto-detects your subagents from `~/.claude/agents/*.md` and populates `[[subagent_routes]]`.
+The config file lives at `~/.config/ccroute/config.toml`. On first run, ccroute auto-detects your subagents from `~/.claude/agents/*.md` and populates `[[subagentRoutes]]`.
 
 Full default config with comments:
 
@@ -67,23 +92,27 @@ serviceTier = "default"
 [opencode]
 baseUrl = "https://opencode.ai/zen/go"
 
+[anthropic]
+baseUrl = "https://api.anthropic.com"
+passthrough = true           # true = forward claude-* requests to Anthropic; false = reject with 400
+
 # Subagent routes are auto-populated from ~/.claude/agents/*.md
 # Each subagent definition file contains "You are the **<name>**"
 # ccroute matches that pattern and routes the subagent to the specified upstream/model
 
-[[subagent_routes]]
+[[subagentRoutes]]
 match = "You are the **developer**"
 upstream = "opencode"
 model = "minimax-m3"
 
-[[subagent_routes]]
+[[subagentRoutes]]
 match = "You are the **explorer**"
 upstream = "opencode"
 model = "qwen3.7-plus"
 
 # Model-level overrides (applied after subagent detection, before catalog lookup)
 
-[[model_routes]]
+[[modelRoutes]]
 match = "my-custom-model"
 upstream = "codex"
 model = "gpt-4"
@@ -93,11 +122,11 @@ model = "gpt-4"
 
 When a request arrives at `/v1/messages`, ccroute resolves the route in this priority order:
 
-1. **Subagent detection** — If the first system block contains a match string from `[[subagent_routes]]`, use that route's upstream and model.
-2. **Model routes** — If the model ID matches a `[[model_routes]]` entry, use that override.
+1. **Subagent detection** — If the first system block contains a match string from `[[subagentRoutes]]`, use that route's upstream and model.
+2. **Model routes** — If the model ID matches a `[[modelRoutes]]` entry, use that override.
 3. **Catalog lookup** — If the model ID is in the hardcoded catalog (14 OpenCode models), use that.
 4. **Codex pattern** — If the model ID matches `gpt-*`, `o*`, or `codex-*`, route to Codex (subject to `allowedModels` if set).
-5. **Anthropic rejection** — If the model ID matches `claude-*`, `*sonnet*`, `*opus*`, or `*haiku*`, return 400 with help text.
+5. **Anthropic passthrough** — If the model ID matches `claude-*`, `*sonnet*`, `*opus*`, or `*haiku*`, and `anthropic.passthrough = true` (default), forward the request verbatim to `anthropic.baseUrl`. This means pointing `ANTHROPIC_BASE_URL` at ccroute globally is safe — the main conversation and un-routed subagents reach Anthropic transparently. Set `passthrough = false` to revert to a 400 rejection.
 6. **Unknown model** — Return 400 with the list of known models.
 
 ## Supported models
@@ -165,7 +194,7 @@ ccroute authenticates to OpenCode Go with a Bearer API key that you obtain from 
 - No multi-account or profile switching
 - No self-update command
 - No HTTPS on the proxy itself (loopback only)
-- No systemd/launchd service management
+- No built-in service-install command (manual launchd setup documented above for macOS)
 
 ## Development
 

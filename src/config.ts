@@ -33,6 +33,10 @@ export interface CcrouteConfig {
   opencode: {
     baseUrl: string
   }
+  anthropic: {
+    baseUrl: string
+    passthrough: boolean
+  }
   subagentRoutes: SubagentRoute[]
   modelRoutes: ModelRouteOverride[]
 }
@@ -76,6 +80,11 @@ function serializeToml(config: CcrouteConfig): string {
 
   lines.push("[opencode]")
   lines.push(`baseUrl = "${escapeTomlString(config.opencode.baseUrl)}"`)
+  lines.push("")
+
+  lines.push("[anthropic]")
+  lines.push(`baseUrl = "${escapeTomlString(config.anthropic.baseUrl)}"`)
+  lines.push(`passthrough = ${config.anthropic.passthrough}`)
   lines.push("")
 
   for (const route of config.subagentRoutes) {
@@ -156,6 +165,10 @@ export function defaultConfig(): CcrouteConfig {
     opencode: {
       baseUrl: "https://opencode.ai/zen/go",
     },
+    anthropic: {
+      baseUrl: "https://api.anthropic.com",
+      passthrough: true,
+    },
     subagentRoutes: autoDetectSubagentRoutes(),
     modelRoutes: [],
   }
@@ -181,6 +194,13 @@ function deepMerge(defaults: CcrouteConfig, raw: Record<string, unknown>): Ccrou
     const o = raw["opencode"] as Record<string, unknown>
     result.opencode = { ...defaults.opencode }
     if (typeof o["baseUrl"] === "string") result.opencode.baseUrl = o["baseUrl"] as string
+  }
+
+  if (raw["anthropic"] && typeof raw["anthropic"] === "object") {
+    const a = raw["anthropic"] as Record<string, unknown>
+    result.anthropic = { ...defaults.anthropic }
+    if (typeof a["baseUrl"] === "string") result.anthropic.baseUrl = a["baseUrl"] as string
+    if (typeof a["passthrough"] === "boolean") result.anthropic.passthrough = a["passthrough"] as boolean
   }
 
   if (Array.isArray(raw["subagentRoutes"])) {
@@ -231,6 +251,27 @@ function validateConfig(raw: unknown): CcrouteConfig {
     }
   }
 
+  if (obj["anthropic"] && typeof obj["anthropic"] === "object") {
+    const a = obj["anthropic"] as Record<string, unknown>
+    if (a["baseUrl"] !== undefined) {
+      if (typeof a["baseUrl"] !== "string" || (a["baseUrl"] as string).length === 0) {
+        throw new Error(`config.anthropic.baseUrl must be a non-empty string, got: ${a["baseUrl"]}`)
+      }
+      let parsed: URL
+      try { parsed = new URL(a["baseUrl"] as string) }
+      catch { throw new Error(`config.anthropic.baseUrl must be a valid URL, got: ${a["baseUrl"]}`) }
+      const loopback = parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost" || parsed.hostname === "::1" || parsed.hostname === "[::1]"
+      if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && loopback)) {
+        throw new Error(`config.anthropic.baseUrl must be https:// (or http:// to a loopback host); refusing to forward Anthropic credentials to ${a["baseUrl"]}`)
+      }
+    }
+    if (a["passthrough"] !== undefined) {
+      if (typeof a["passthrough"] !== "boolean") {
+        throw new Error(`config.anthropic.passthrough must be a boolean, got: ${a["passthrough"]}`)
+      }
+    }
+  }
+
   if (Array.isArray(obj["subagentRoutes"])) {
     const routes = obj["subagentRoutes"] as unknown[]
     for (let i = 0; i < routes.length; i++) {
@@ -257,6 +298,9 @@ function validateConfig(raw: unknown): CcrouteConfig {
   const defaults = defaultConfig()
   return deepMerge(defaults, obj)
 }
+
+/** Exported for unit tests only — call validateConfig with a raw object. */
+export const validateConfigForTest: (raw: unknown) => CcrouteConfig = validateConfig
 
 export function loadConfig(): CcrouteConfig {
   const path = configPath()

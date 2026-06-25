@@ -15,7 +15,7 @@ export async function* reduceResponsesStream(
     switch (event) {
       case "response.created": {
         const p = JSON.parse(data) as {
-          response: { id: string; model: string; usage: { input_tokens: number; output_tokens: number } }
+          response: { id: string; model: string; usage: { input_tokens: number; output_tokens: number } | null }
         }
         yield formatSSE("message_start", {
           type: "message_start",
@@ -27,7 +27,7 @@ export async function* reduceResponsesStream(
             content: [],
             stop_reason: null,
             stop_sequence: null,
-            usage: { input_tokens: p.response.usage.input_tokens, output_tokens: 0 },
+            usage: { input_tokens: p.response.usage?.input_tokens ?? 0, output_tokens: 0 },
           },
         })
         break
@@ -57,7 +57,7 @@ export async function* reduceResponsesStream(
       case "response.completed":
       case "response.incomplete": {
         const p = JSON.parse(data) as {
-          response: { usage: { input_tokens: number; output_tokens: number } }
+          response: { usage: { input_tokens: number; output_tokens: number } | null }
         }
         if (contentBlockStarted && !contentBlockStopped) {
           yield formatSSE("content_block_stop", {
@@ -69,7 +69,7 @@ export async function* reduceResponsesStream(
         yield formatSSE("message_delta", {
           type: "message_delta",
           delta: { stop_reason: "end_turn", stop_sequence: null },
-          usage: { output_tokens: p.response.usage.output_tokens },
+          usage: { output_tokens: p.response.usage?.output_tokens ?? 0 },
         })
         yield formatSSE("message_stop", {
           type: "message_stop",
