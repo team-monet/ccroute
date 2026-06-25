@@ -17,7 +17,7 @@ export function startServer(config: CcrouteConfig): { port: number; stop: () => 
       info("request", { method: req.method, path: url.pathname })
       if (url.pathname === "/healthz") return new Response("ok", { status: 200 })
       if (url.pathname === "/v1/messages" && req.method === "POST") return handleMessages(req, config)
-      if (url.pathname === "/v1/messages/count_tokens" && req.method === "POST") return handleCountTokens(req)
+      if (url.pathname === "/v1/messages/count_tokens" && req.method === "POST") return handleCountTokens(req, config)
       if (url.pathname === "/v1/models" && req.method === "GET") return handleModels(config)
       return anthropicError(404, "not_found_error", `Unknown path: ${req.method} ${url.pathname}`)
     },
@@ -146,41 +146,39 @@ async function handleOpencode(
   return anthropicError(500, "api_error", `Unknown endpoint: ${route.endpointPath}`)
 }
 
+async function forwardToAnthropic(
+  req: Request,
+  body: Record<string, unknown>,
+  config: CcrouteConfig,
+  path: string,
+): Promise<Response> {
+  const url = `${config.anthropic.baseUrl.replace(/\/+$/, "")}${path}`
+  const headers = new Headers()
+  const HOP_BY_HOP = new Set(["host", "content-length", "connection", "accept-encoding"])
+  for (const [key, value] of req.headers.entries()) {
+    if (!HOP_BY_HOP.has(key.toLowerCase())) headers.set(key, value)
+  }
+  // NOTE: let fetch throw on network failure — callers decide how to handle it.
+  const upstream = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) })
+  const STRIP_RESPONSE = new Set(["content-encoding", "content-length", "transfer-encoding", "connection", "set-cookie", "www-authenticate"])
+  const responseHeaders = new Headers()
+  for (const [key, value] of upstream.headers.entries()) {
+    if (!STRIP_RESPONSE.has(key.toLowerCase())) responseHeaders.set(key, value)
+  }
+  responseHeaders.set("cache-control", "no-cache")
+  return new Response(upstream.body, { status: upstream.status, headers: responseHeaders })
+}
+
 async function handleAnthropicPassthrough(
   req: Request,
   body: Record<string, unknown>,
   config: CcrouteConfig,
 ): Promise<Response> {
-  const url = `${config.anthropic.baseUrl.replace(/\/+$/, "")}/v1/messages`
-
-  const headers = new Headers()
-  const HOP_BY_HOP = new Set(["host", "content-length", "connection", "accept-encoding"])
-  for (const [key, value] of req.headers.entries()) {
-    if (!HOP_BY_HOP.has(key.toLowerCase())) {
-      headers.set(key, value)
-    }
-  }
-
-  let upstream: Response
   try {
-    upstream = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) })
+    return await forwardToAnthropic(req, body, config, "/v1/messages")
   } catch (err) {
     return anthropicError(502, "api_error", `Cannot reach Anthropic: ${err}`)
   }
-
-  const STRIP_RESPONSE = new Set(["content-encoding", "content-length", "transfer-encoding", "connection", "set-cookie", "www-authenticate"])
-  const responseHeaders = new Headers()
-  for (const [key, value] of upstream.headers.entries()) {
-    if (!STRIP_RESPONSE.has(key.toLowerCase())) {
-      responseHeaders.set(key, value)
-    }
-  }
-  responseHeaders.set("cache-control", "no-cache")
-
-  return new Response(upstream.body, {
-    status: upstream.status,
-    headers: responseHeaders,
-  })
 }
 
 function transformOpenAIToAnthropic(
@@ -258,9 +256,27 @@ function transformOpenAIToAnthropic(
   })
 }
 
-async function handleCountTokens(req: Request): Promise<Response> {
+async function handleCountTokens(req: Request, config: CcrouteConfig): Promise<Response> {
+  let body: unknown
+  try { body = await req.json() } catch (err) {
+    return anthropicError(400, "invalid_request_error", `Bad request: ${err}`)
+  }
+  const b = (body && typeof body === "object") ? body as Record<string, unknown> : {}
+  const model = typeof b["model"] === "string" ? b["model"] as string : ""
+  const systemBlocks: unknown[] = Array.isArray(b["system"])
+    ? b["system"] as unknown[]
+    : typeof b["system"] === "string" ? [b["system"]] : []
+
+  const route = resolveRoute(model, systemBlocks, config)
+  if (route.kind === "anthropic-passthrough") {
+    try {
+      return await forwardToAnthropic(req, b, config, "/v1/messages/count_tokens")
+    } catch {
+      // network failure — fall through to the local estimate below
+    }
+  }
+
   try {
-    const body = await req.json() as unknown
     const { input_tokens } = countRequestTokens(body)
     return new Response(JSON.stringify({ input_tokens }), {
       status: 200,
