@@ -1,9 +1,10 @@
 import type { CcrouteConfig } from "../config"
-import { anthropicError, anthropicStreamError, redactSecrets } from "../errors"
+import { anthropicError, redactSecrets } from "../errors"
 import { anthropicToResponses, injectCodexHeaders } from "./translate"
 import { reduceResponsesStream } from "./reducer"
 import { getValidToken, refreshAccessToken, saveTokens } from "./auth"
 import { warn } from "../logger"
+import { sseToAnthropicStream } from "../sse-stream"
 
 export async function handleCodexMessages(
   _req: Request,
@@ -61,69 +62,18 @@ async function fetchCodex(url: string, headers: Headers, body: unknown): Promise
 }
 
 function transformResponsesToAnthropic(upstream: ReadableStream<Uint8Array>, originalModel: string): ReadableStream<Uint8Array> {
-  const encoder = new TextEncoder()
-  return new ReadableStream({
-    async start(controller) {
-      const reader = upstream.getReader()
-      const decoder = new TextDecoder()
-      const queue: Array<{event?: string; data: string}> = []
-      let resolveNext: (() => void) | null = null
-      let done = false
-      const push = (item: {event?: string; data: string} | null) => {
-        if (item) queue.push(item)
-        else done = true
-        if (resolveNext) {
-          resolveNext()
-          resolveNext = null
-        }
+  return sseToAnthropicStream(
+    upstream,
+    (block) => {
+      let eventName: string | undefined
+      let data = ""
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event: ")) eventName = line.slice(7).trim()
+        else if (line.startsWith("data: ")) data += line.slice(6).trim()
       }
-      const iterable: AsyncIterable<{event?: string; data: string}> = {
-        [Symbol.asyncIterator]() {
-          return {
-            async next() {
-              if (queue.length > 0) return { value: queue.shift()!, done: false }
-              if (done) return { value: undefined, done: true }
-              await new Promise<void>(r => { resolveNext = r })
-              if (queue.length > 0) return { value: queue.shift()!, done: false }
-              return { value: undefined, done: true }
-            }
-          }
-        }
-      }
-      ;(async () => {
-        let buffer = ""
-        try {
-          while (true) {
-            const { done: rd, value } = await reader.read()
-            if (rd) { push(null); break }
-            buffer += decoder.decode(value, { stream: true })
-            const events = buffer.split("\n\n")
-            buffer = events.pop() ?? ""
-            for (const evt of events) {
-              let eventName: string | undefined
-              let data = ""
-              for (const line of evt.split("\n")) {
-                if (line.startsWith("event: ")) eventName = line.slice(7).trim()
-                else if (line.startsWith("data: ")) data += line.slice(6).trim()
-              }
-              if (data) push({ event: eventName, data })
-            }
-          }
-        } catch {
-          push(null)
-        }
-      })()
-      try {
-        for await (const sseLine of reduceResponsesStream(iterable, originalModel)) {
-          controller.enqueue(encoder.encode(sseLine))
-        }
-        controller.close()
-      } catch (err) {
-        controller.enqueue(encoder.encode(anthropicStreamError(`Stream error: ${err}`)))
-        controller.close()
-      } finally {
-        reader.releaseLock()
-      }
+      if (data) return { items: [{ event: eventName, data }], done: false }
+      return { items: [], done: false }
     },
-  })
+    (it) => reduceResponsesStream(it, originalModel),
+  )
 }

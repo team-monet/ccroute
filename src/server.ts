@@ -1,4 +1,4 @@
-import { anthropicError, anthropicStreamError, redactSecrets } from "./errors"
+import { anthropicError, redactSecrets } from "./errors"
 import { info } from "./logger"
 import type { CcrouteConfig, ResolvedRoute } from "./config"
 import { countRequestTokens } from "./token-counter"
@@ -7,11 +7,17 @@ import { anthropicToOpenAI } from "./opencode/translate"
 import { reduceOpenAIStream } from "./opencode/reducer"
 import { hasApiKey as hasOpencodeKey, getApiKey as getOpencodeKey } from "./opencode/auth"
 import { handleCodexMessages } from "./codex/handler"
+import { sseToAnthropicStream } from "./sse-stream"
 
 export function startServer(config: CcrouteConfig): { port: number; stop: () => void } {
   const server = Bun.serve({
     port: config.port,
     hostname: "127.0.0.1",
+    // Streaming passthrough: upstream SSE can idle >10s (extended thinking, large-context
+    // prompt processing, gaps between events). Bun's default idleTimeout is 10s, which would
+    // reap the client socket mid-stream → Claude Code "Connection closed mid-response".
+    // 255 is Bun's max (0 disables); a genuinely hung connection still gets reaped.
+    idleTimeout: 255,
     async fetch(req: Request): Promise<Response> {
       const url = new URL(req.url)
       info("request", { method: req.method, path: url.pathname })
@@ -185,75 +191,24 @@ function transformOpenAIToAnthropic(
   upstream: ReadableStream<Uint8Array>,
   originalModel: string,
 ): ReadableStream<Uint8Array> {
-  const encoder = new TextEncoder()
-  return new ReadableStream({
-    async start(controller) {
-      const reader = upstream.getReader()
-      const decoder = new TextDecoder()
-      const queue: Array<{ data: string }> = []
-      let resolveNext: (() => void) | null = null
-      let done = false
-
-      const push = (item: { data: string } | null) => {
-        if (item) queue.push(item)
-        else done = true
-        if (resolveNext) {
-          resolveNext()
-          resolveNext = null
-        }
+  return sseToAnthropicStream(
+    upstream,
+    (block) => {
+      // Iterate ALL data: lines — a single \n\n-delimited block may carry more
+      // than one (e.g. a [DONE] sentinel packed after a normal chunk, or
+      // back-to-back chunks if the upstream omitted blank-line separators).
+      // The first [DONE] wins and the sentinel itself is not forwarded.
+      const items: { data: string }[] = []
+      for (const line of block.split("\n")) {
+        if (!line.startsWith("data: ")) continue
+        const data = line.slice(6).trim()
+        if (data === "[DONE]") return { items, done: true }
+        items.push({ data })
       }
-
-      const iterable: AsyncIterable<{ data: string }> = {
-        [Symbol.asyncIterator]() {
-          return {
-            async next() {
-              if (queue.length > 0) return { value: queue.shift()!, done: false }
-              if (done) return { value: undefined, done: true }
-              await new Promise<void>(r => { resolveNext = r })
-              if (queue.length > 0) return { value: queue.shift()!, done: false }
-              return { value: undefined, done: true }
-            },
-          }
-        },
-      }
-
-      ;(async () => {
-        let buffer = ""
-        try {
-          while (true) {
-            const { done: rd, value } = await reader.read()
-            if (rd) { push(null); break }
-            buffer += decoder.decode(value, { stream: true })
-            const events = buffer.split("\n\n")
-            buffer = events.pop() ?? ""
-            for (const evt of events) {
-              const lines = evt.split("\n")
-              for (const line of lines) {
-                if (!line.startsWith("data: ")) continue
-                const data = line.slice(6).trim()
-                if (data === "[DONE]") { push(null); return }
-                push({ data })
-              }
-            }
-          }
-        } catch {
-          push(null)
-        }
-      })()
-
-      try {
-        for await (const sseLine of reduceOpenAIStream(iterable, originalModel)) {
-          controller.enqueue(encoder.encode(sseLine))
-        }
-        controller.close()
-      } catch (err) {
-        controller.enqueue(encoder.encode(anthropicStreamError(`Stream error: ${err}`)))
-        controller.close()
-      } finally {
-        reader.cancel().catch(() => {})
-      }
+      return { items, done: false }
     },
-  })
+    (it) => reduceOpenAIStream(it, originalModel),
+  )
 }
 
 async function handleCountTokens(req: Request, config: CcrouteConfig): Promise<Response> {

@@ -1,13 +1,66 @@
-function formatSSE(event: string, data: unknown): string {
-  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+import { AnthropicBlockEmitter, formatSSE } from "../sse"
+
+/**
+ * Anthropic requires strictly sequential content blocks: at most ONE block open
+ * at any time, each block is content_block_start -> content_block_delta(s) ->
+ * content_block_stop, fully closed before the next block opens, indices
+ * increase by 1, stops occur in ascending order.
+ *
+ * Design: TEXT is streamed live (incrementally emitted) as the only live block.
+ * TOOL CALLS are NOT streamed live — they are accumulated in a per-output_index
+ * buffer (toolBuf) and emitted as complete, sequential content_block_start →
+ * deltas → stop triples at the terminal event. This eliminates the lossiness of
+ * the previous "single current block + overwrite" design for realistic
+ * interleavings (two function_call items with crossed arg deltas, id arriving
+ * after some args, args for an index whose id/name never arrived, etc.).
+ *
+ * Consequence: tool_use blocks are always emitted after the text block, in the
+ * order their output_index was first seen (deterministic via an arrival
+ * counter). Upstream interleaving of text and tools is collapsed into
+ * text-before-tool. This is acceptable because tool execution is
+ * order-independent and partial tool JSON is unusable.
+ *
+ * The emitter's `openTool` calls `ensureStart` and `closeCurrent`, so a stream
+ * that is ONLY a function_call (no response.created, no text) still emits
+ * message_start before the tool block, and any open text block is closed
+ * before the tool block opens.
+ */
+
+interface ToolBufEntry {
+  order: number
+  callId?: string
+  name?: string
+  args: string[]
 }
 
 export async function* reduceResponsesStream(
   upstream: AsyncIterable<{ event?: string; data: string }>,
   originalModel: string
 ): AsyncGenerator<string, void, void> {
-  let contentBlockStarted = false
-  let contentBlockStopped = false
+  const emitter = new AnthropicBlockEmitter(originalModel)
+  const toolBuf: Map<number, ToolBufEntry> = new Map()
+  let arrivalCounter = 0
+  let sawTool = false
+
+  function* flushTools(): Generator<string, void, void> {
+    const sorted = Array.from(toolBuf.entries()).sort((a, b) => a[1].order - b[1].order)
+    for (const [, entry] of sorted) {
+      if (typeof entry.callId !== "string" || entry.callId === "" ||
+          typeof entry.name !== "string" || entry.name === "") {
+        console.warn(
+          "[reducer] skipping tool index with missing call_id or name:",
+          { hasCallId: typeof entry.callId === "string" && entry.callId !== "", hasName: typeof entry.name === "string" && entry.name !== "" }
+        )
+        continue
+      }
+      yield* emitter.openTool(entry.callId, entry.name)
+      for (const fragment of entry.args) {
+        if (typeof fragment !== "string" || fragment === "") continue
+        yield* emitter.toolArgsDelta(fragment)
+      }
+      yield* emitter.closeCurrent()
+    }
+  }
 
   for await (const { event, data } of upstream) {
     if (!event) continue
@@ -17,82 +70,122 @@ export async function* reduceResponsesStream(
         const p = JSON.parse(data) as {
           response: { id: string; model: string; usage: { input_tokens: number; output_tokens: number } | null }
         }
-        yield formatSSE("message_start", {
-          type: "message_start",
-          message: {
-            id: `msg_${p.response.id}`,
-            type: "message",
-            role: "assistant",
-            model: originalModel,
-            content: [],
-            stop_reason: null,
-            stop_sequence: null,
-            usage: { input_tokens: p.response.usage?.input_tokens ?? 0, output_tokens: 0 },
-          },
-        })
+        for (const s of emitter.ensureStart({
+          id: `msg_${p.response.id}`,
+          inputTokens: p.response.usage?.input_tokens ?? 0,
+        })) yield s
         break
       }
 
+      case "response.output_item.added": {
+        const p = JSON.parse(data) as {
+          item: { id: string; type: string; status?: string; arguments?: string; call_id?: string; name?: string }
+          output_index: number
+        }
+        if (p.item.type === "function_call") {
+          const idx = p.output_index
+          let buf = toolBuf.get(idx)
+          if (!buf) {
+            buf = { order: arrivalCounter++, args: [] }
+            toolBuf.set(idx, buf)
+          }
+          if (typeof p.item.call_id === "string" && p.item.call_id !== "") {
+            buf.callId = p.item.call_id
+          }
+          if (typeof p.item.name === "string" && p.item.name !== "") {
+            buf.name = p.item.name
+          }
+          sawTool = true
+        }
+        break
+      }
+
+      case "response.function_call_arguments.delta": {
+        const p = JSON.parse(data) as { delta: string; output_index: number }
+        const buf = toolBuf.get(p.output_index)
+        if (buf && typeof p.delta === "string" && p.delta !== "") {
+          buf.args.push(p.delta)
+        }
+        break
+      }
+
+      case "response.function_call_arguments.done":
+        // args already buffered from deltas; .done is a no-op to avoid double-counting
+        break
+
       case "response.output_text.delta": {
         const p = JSON.parse(data) as { delta: string }
-        if (!contentBlockStarted) {
-          yield formatSSE("content_block_start", {
-            type: "content_block_start",
-            index: 0,
-            content_block: { type: "text", text: "" },
-          })
-          contentBlockStarted = true
+        if (typeof p.delta === "string") {
+          for (const s of emitter.textDelta(p.delta)) yield s
         }
-        yield formatSSE("content_block_delta", {
-          type: "content_block_delta",
-          index: 0,
-          delta: { type: "text_delta", text: p.delta },
-        })
         break
       }
 
       case "response.output_text.done":
+        if (emitter.currentKind === "text") {
+          for (const s of emitter.closeCurrent()) yield s
+        }
         break
 
-      case "response.completed":
+      case "response.output_item.done": {
+        const p = JSON.parse(data) as {
+          item: { id: string; type: string; status?: string; arguments?: string; call_id?: string; name?: string }
+          output_index: number
+        }
+        // Tools are buffered and flushed at the terminal, not here.
+        if (p.item.type === "message") {
+          if (emitter.currentKind === "text") {
+            for (const s of emitter.closeCurrent()) yield s
+          }
+        }
+        break
+      }
+
+      case "response.completed": {
+        const p = JSON.parse(data) as {
+          response: { usage: { input_tokens: number; output_tokens: number } | null }
+        }
+        for (const s of emitter.closeCurrent()) yield s
+        yield* flushTools()
+        for (const s of emitter.finish(sawTool ? "tool_use" : "end_turn", p.response.usage?.output_tokens ?? 0)) yield s
+        break
+      }
+
       case "response.incomplete": {
         const p = JSON.parse(data) as {
           response: { usage: { input_tokens: number; output_tokens: number } | null }
         }
-        if (contentBlockStarted && !contentBlockStopped) {
-          yield formatSSE("content_block_stop", {
-            type: "content_block_stop",
-            index: 0,
-          })
-          contentBlockStopped = true
-        }
-        yield formatSSE("message_delta", {
-          type: "message_delta",
-          delta: { stop_reason: "end_turn", stop_sequence: null },
-          usage: { output_tokens: p.response.usage?.output_tokens ?? 0 },
-        })
-        yield formatSSE("message_stop", {
-          type: "message_stop",
-        })
+        for (const s of emitter.closeCurrent()) yield s
+        yield* flushTools()
+        for (const s of emitter.finish("max_tokens", p.response.usage?.output_tokens ?? 0)) yield s
         break
       }
 
       case "response.failed": {
         const p = JSON.parse(data) as {
-          response: { error: { message: string } }
+          response?: { error?: { message?: string } }
         }
+        for (const s of emitter.closeCurrent()) yield s
         yield formatSSE("error", {
           type: "api_error",
-          message: p.response.error.message,
+          message: p.response?.error?.message ?? "Codex upstream reported a failed response",
         })
-        yield formatSSE("message_stop", {
-          type: "message_stop",
-        })
+        yield formatSSE("message_stop", { type: "message_stop" })
+        emitter.markTerminal()
         break
       }
 
       default:
         break
     }
+  }
+
+  // Truncated stream: upstream ended without a terminal event. Close any open
+  // block, flush buffered tools, and emit a complete terminal so the Anthropic
+  // stream is well-formed.
+  if (emitter.started && !emitter.terminalEmitted) {
+    for (const s of emitter.closeCurrent()) yield s
+    yield* flushTools()
+    for (const s of emitter.finish(sawTool ? "tool_use" : "end_turn", 0)) yield s
   }
 }
