@@ -1,0 +1,7 @@
+node_modules/
+ccroute
+ccroute-*
+*.log
+.DS_Store
+.env
+.env.local
