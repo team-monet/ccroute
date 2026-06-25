@@ -7,7 +7,7 @@ const AUTH_BASE = "https://auth.openai.com"
 const TOKEN_ENDPOINT = "https://auth.openai.com/oauth/token"
 const REDIRECT_PORT = 1455
 export const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}/auth/callback`
-const SCOPE = "openid profile email offline_access"
+const SCOPE = "openid profile email offline_access api.connectors.read api.connectors.invoke"
 const REFRESH_MARGIN_MS = 5 * 60 * 1000
 
 export interface CodexTokens {

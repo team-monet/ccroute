@@ -92,8 +92,8 @@ cmd_install() {
   echo "binary: $binary"
 
   # Warn (don't block) if no upstream is authenticated — serve exits without one.
-  if ! "$binary" codex auth status 2>/dev/null | grep -q "authenticated" \
-     && ! "$binary" opencode auth status 2>/dev/null | grep -q "configured"; then
+  if ! "$binary" codex auth status 2>/dev/null | grep -q "✓ authenticated" \
+     && ! "$binary" opencode auth status 2>/dev/null | grep -q "✓ configured"; then
     echo "⚠ no upstream authenticated yet. Run 'ccroute codex auth login' and/or 'ccroute opencode auth login' first,"
     echo "  otherwise the service will exit immediately and launchd will keep retrying."
   fi
