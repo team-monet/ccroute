@@ -25,7 +25,7 @@ interface OpenAIRequest {
   temperature?: number
   top_p?: number
   tools?: OpenAITool[]
-  tool_choice?: "auto" | "required" | { type: "function"; function: { name: string } }
+  tool_choice?: "auto" | "required" | "none" | { type: "function"; function: { name: string } }
 }
 
 interface AnthropicMessage {
@@ -222,9 +222,17 @@ export function anthropicToOpenAI(body: unknown, model: string): OpenAIRequest {
       result.tool_choice = "auto"
     } else if (toolChoice === "any") {
       result.tool_choice = "required"
+    } else if (toolChoice === "none") {
+      result.tool_choice = "none"
     } else if (typeof toolChoice === "object") {
       const tc = toolChoice as Record<string, unknown>
-      if (tc["type"] === "tool" && typeof tc["name"] === "string") {
+      if (tc["type"] === "auto") {
+        result.tool_choice = "auto"
+      } else if (tc["type"] === "any") {
+        result.tool_choice = "required"
+      } else if (tc["type"] === "none") {
+        result.tool_choice = "none"
+      } else if (tc["type"] === "tool" && typeof tc["name"] === "string") {
         result.tool_choice = {
           type: "function",
           function: { name: tc["name"] as string },

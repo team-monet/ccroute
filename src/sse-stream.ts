@@ -57,8 +57,8 @@ export function sseToAnthropicStream<T>(
             buffer = events.pop() ?? ""
             for (const evt of events) {
               const { items, done: blockDone } = parseEventBlock(evt)
-              if (blockDone) { push(null); return }
               for (const item of items) push(item)
+              if (blockDone) { push(null); return }
             }
           }
         } catch {

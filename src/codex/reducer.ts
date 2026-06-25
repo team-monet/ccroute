@@ -109,9 +109,23 @@ export async function* reduceResponsesStream(
         break
       }
 
-      case "response.function_call_arguments.done":
-        // args already buffered from deltas; .done is a no-op to avoid double-counting
+      case "response.function_call_arguments.done": {
+        // .done carries the complete arguments string. If no .delta fragments
+        // were buffered (some upstreams send only .done, no .delta), seed the
+        // buffer with the complete payload so flushTools has something to emit.
+        // Skip when deltas already exist to avoid double-counting.
+        const p = JSON.parse(data) as { arguments?: string; output_index: number }
+        const buf = toolBuf.get(p.output_index)
+        if (
+          buf &&
+          buf.args.length === 0 &&
+          typeof p.arguments === "string" &&
+          p.arguments !== ""
+        ) {
+          buf.args.push(p.arguments)
+        }
         break
+      }
 
       case "response.output_text.delta": {
         const p = JSON.parse(data) as { delta: string }

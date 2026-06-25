@@ -153,6 +153,41 @@ describe("anthropicToResponses", () => {
       expect(result.tool_choice).toEqual({ type: "function", name: "read_file" })
     })
 
+    // FIX 2: the object branch must map all object-form values, not just
+    // {type:"tool",name}. Anthropic clients send tool_choice as an object
+    // for auto/any/none as well.
+    test("object-form {type:'any'} maps to 'required'", () => {
+      const result = anthropicToResponses(
+        { messages: [], tool_choice: { type: "any" } },
+        "x"
+      )
+      expect(result.tool_choice).toBe("required")
+    })
+
+    test("object-form {type:'none'} maps to 'none'", () => {
+      const result = anthropicToResponses(
+        { messages: [], tool_choice: { type: "none" } },
+        "x"
+      )
+      expect(result.tool_choice).toBe("none")
+    })
+
+    test("object-form {type:'auto'} maps to 'auto'", () => {
+      const result = anthropicToResponses(
+        { messages: [], tool_choice: { type: "auto" } },
+        "x"
+      )
+      expect(result.tool_choice).toBe("auto")
+    })
+
+    test("object-form {type:'tool',name:'X'} maps to {type:'function',name:'X'}", () => {
+      const result = anthropicToResponses(
+        { messages: [], tool_choice: { type: "tool", name: "X" } },
+        "x"
+      )
+      expect(result.tool_choice).toEqual({ type: "function", name: "X" })
+    })
+
     test("omits tool_choice when not provided", () => {
       const result = anthropicToResponses({ messages: [] }, "x")
       expect(result.tool_choice).toBeUndefined()

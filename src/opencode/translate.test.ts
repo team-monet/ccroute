@@ -147,6 +147,51 @@ describe("anthropicToOpenAI", () => {
     })
   })
 
+  // FIX 3: the object branch must map all object-form values, not just
+  // {type:"tool",name}. The string "none" must also pass through.
+  test("object-form tool_choice {type:'any'} maps to 'required'", () => {
+    const result = anthropicToOpenAI(
+      { tool_choice: { type: "any" }, messages: [] },
+      "x"
+    )
+    expect(result.tool_choice).toBe("required")
+  })
+
+  test("object-form tool_choice {type:'none'} maps to 'none'", () => {
+    const result = anthropicToOpenAI(
+      { tool_choice: { type: "none" }, messages: [] },
+      "x"
+    )
+    expect(result.tool_choice).toBe("none")
+  })
+
+  test("object-form tool_choice {type:'auto'} maps to 'auto'", () => {
+    const result = anthropicToOpenAI(
+      { tool_choice: { type: "auto" }, messages: [] },
+      "x"
+    )
+    expect(result.tool_choice).toBe("auto")
+  })
+
+  test("object-form tool_choice {type:'tool',name:'X'} maps to function choice", () => {
+    const result = anthropicToOpenAI(
+      { tool_choice: { type: "tool", name: "X" }, messages: [] },
+      "x"
+    )
+    expect(result.tool_choice).toEqual({
+      type: "function",
+      function: { name: "X" },
+    })
+  })
+
+  test("string-form tool_choice 'none' maps to 'none'", () => {
+    const result = anthropicToOpenAI(
+      { tool_choice: "none", messages: [] },
+      "x"
+    )
+    expect(result.tool_choice).toBe("none")
+  })
+
   test("tool_choice absent is omitted", () => {
     const result = anthropicToOpenAI({ messages: [] }, "x")
     expect(result).not.toHaveProperty("tool_choice")

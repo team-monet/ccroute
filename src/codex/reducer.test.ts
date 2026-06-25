@@ -206,6 +206,85 @@ describe("reduceResponsesStream", () => {
       expect(msgDelta.delta.stop_reason).toBe("end_turn")
     })
 
+    // FIX 5: if a tool's args arrive ONLY in the .done event (no prior .delta
+    // fragments), the reducer must seed the buffer from .done's arguments.
+    // Otherwise flushTools emits a tool_use block with no input JSON at all.
+    test("function_call_arguments.done with no prior deltas: args seeded from .done payload", async () => {
+      const events = await collect([
+        { event: "response.created", data: JSON.stringify({ response: { id: "resp_done_only", model: "gpt-5.5", usage: { input_tokens: 2, output_tokens: 0 } } }) },
+        {
+          event: "response.output_item.added",
+          data: JSON.stringify({
+            type: "response.output_item.added",
+            item: { id: "fc_done", type: "function_call", status: "in_progress", arguments: "", call_id: "call_done", name: "f" },
+            output_index: 0,
+          }),
+        },
+        // NO response.function_call_arguments.delta events
+        { event: "response.function_call_arguments.done", data: JSON.stringify({ type: "response.function_call_arguments.done", arguments: '{"x":1}', item_id: "fc_done", output_index: 0 }) },
+        { event: "response.output_item.done", data: JSON.stringify({ type: "response.output_item.done", item: { id: "fc_done", type: "function_call", status: "completed", arguments: '{"x":1}', call_id: "call_done", name: "f" }, output_index: 0 }) },
+        { event: "response.completed", data: JSON.stringify({ response: { status: "completed", usage: { input_tokens: 2, output_tokens: 6 } } }) },
+      ])
+
+      const toolStart = events.find(
+        (e) => e.event === "content_block_start"
+          && ((e.data as Record<string, unknown>)["content_block"] as Record<string, unknown>)["type"] === "tool_use"
+      )
+      expect(toolStart).toBeDefined()
+      const toolIndex = (toolStart!.data as Record<string, unknown>)["index"] as number
+
+      // The tool block must contain {"x":1} — concatenated from the
+      // input_json_delta partial_json fragments, not empty.
+      const jsonDeltas = events.filter(
+        (e) => e.event === "content_block_delta"
+          && (e.data as Record<string, unknown>)["index"] === toolIndex
+          && ((e.data as Record<string, unknown>)["delta"] as Record<string, unknown>)["type"] === "input_json_delta"
+      )
+      const concatenated = jsonDeltas
+        .map((e) => ((e.data as Record<string, unknown>)["delta"] as Record<string, unknown>)["partial_json"] as string)
+        .join("")
+      expect(concatenated).toBe('{"x":1}')
+    })
+
+    // FIX 5 (no-double-count): if both .delta and .done arrive with args, the
+    // .done must NOT append (it would double the arguments).
+    test("function_call_arguments.done after deltas: does not double-count args", async () => {
+      const events = await collect([
+        { event: "response.created", data: JSON.stringify({ response: { id: "resp_dc", model: "gpt-5.5", usage: { input_tokens: 2, output_tokens: 0 } } }) },
+        {
+          event: "response.output_item.added",
+          data: JSON.stringify({
+            type: "response.output_item.added",
+            item: { id: "fc_dc", type: "function_call", status: "in_progress", arguments: "", call_id: "call_dc", name: "f" },
+            output_index: 0,
+          }),
+        },
+        { event: "response.function_call_arguments.delta", data: JSON.stringify({ type: "response.function_call_arguments.delta", delta: '{"x":1}', item_id: "fc_dc", output_index: 0 }) },
+        { event: "response.function_call_arguments.done", data: JSON.stringify({ type: "response.function_call_arguments.done", arguments: '{"x":1}', item_id: "fc_dc", output_index: 0 }) },
+        { event: "response.output_item.done", data: JSON.stringify({ type: "response.output_item.done", item: { id: "fc_dc", type: "function_call", status: "completed", arguments: '{"x":1}', call_id: "call_dc", name: "f" }, output_index: 0 }) },
+        { event: "response.completed", data: JSON.stringify({ response: { status: "completed", usage: { input_tokens: 2, output_tokens: 6 } } }) },
+      ])
+
+      const toolStart = events.find(
+        (e) => e.event === "content_block_start"
+          && ((e.data as Record<string, unknown>)["content_block"] as Record<string, unknown>)["type"] === "tool_use"
+      )
+      expect(toolStart).toBeDefined()
+      const toolIndex = (toolStart!.data as Record<string, unknown>)["index"] as number
+
+      const jsonDeltas = events.filter(
+        (e) => e.event === "content_block_delta"
+          && (e.data as Record<string, unknown>)["index"] === toolIndex
+          && ((e.data as Record<string, unknown>)["delta"] as Record<string, unknown>)["type"] === "input_json_delta"
+      )
+      const concatenated = jsonDeltas
+        .map((e) => ((e.data as Record<string, unknown>)["delta"] as Record<string, unknown>)["partial_json"] as string)
+        .join("")
+      // Must be {"x":1} — NOT {"x":1}{"x":1} (the .done payload was ignored
+      // because the buffer was already non-empty from the .delta).
+      expect(concatenated).toBe('{"x":1}')
+    })
+
     test("text-then-tool stream: sequential blocks at index 0 (text) and 1 (tool), no overlap, stops ascending", async () => {
       const events = await collect([
         { event: "response.created", data: JSON.stringify({ response: { id: "resp_t3", model: "gpt-5.5", usage: { input_tokens: 1, output_tokens: 0 } } }) },

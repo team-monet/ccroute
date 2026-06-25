@@ -88,6 +88,9 @@ function mapToolChoice(
     if (choice === "none") return "none"
     return undefined
   }
+  if (choice.type === "auto") return "auto"
+  if (choice.type === "any") return "required"
+  if (choice.type === "none") return "none"
   if (choice.type === "tool" && typeof choice.name === "string") {
     return { type: "function", name: choice.name }
   }
