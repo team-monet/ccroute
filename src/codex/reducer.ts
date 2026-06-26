@@ -196,8 +196,11 @@ export async function* reduceResponsesStream(
 
   // Truncated stream: upstream ended without a terminal event. Close any open
   // block, flush buffered tools, and emit a complete terminal so the Anthropic
-  // stream is well-formed.
-  if (emitter.started && !emitter.terminalEmitted) {
+  // stream is well-formed. Fire whenever we have something to say: a started
+  // emitter OR a buffered tool (whose openTool/ensureStart will emit the
+  // message_start). An entirely empty stream — no started, empty toolBuf —
+  // emits nothing.
+  if (!emitter.terminalEmitted && (emitter.started || toolBuf.size > 0)) {
     for (const s of emitter.closeCurrent()) yield s
     yield* flushTools()
     for (const s of emitter.finish(sawTool ? "tool_use" : "end_turn", 0)) yield s

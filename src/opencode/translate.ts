@@ -26,6 +26,7 @@ interface OpenAIRequest {
   top_p?: number
   tools?: OpenAITool[]
   tool_choice?: "auto" | "required" | "none" | { type: "function"; function: { name: string } }
+  parallel_tool_calls?: boolean
 }
 
 interface AnthropicMessage {
@@ -126,10 +127,11 @@ export function anthropicToOpenAI(body: unknown, model: string): OpenAIRequest {
             if (Array.isArray(trContent) && trContent.some((b): boolean => !isTextBlock(b))) {
               warn("anthropicToOpenAI: tool_result contained non-text blocks that were dropped", { toolCallId })
             }
+            const base = flattened === "" ? "(no content)" : flattened
             messages.push({
               role: "tool",
               tool_call_id: toolCallId,
-              content: flattened === "" ? "(no content)" : flattened,
+              content: tr["is_error"] === true ? `Tool error: ${base}` : base,
             })
           }
           if (textBlocks.length > 0) {
@@ -237,6 +239,9 @@ export function anthropicToOpenAI(body: unknown, model: string): OpenAIRequest {
           type: "function",
           function: { name: tc["name"] as string },
         }
+      }
+      if (tc["disable_parallel_tool_use"] === true) {
+        result.parallel_tool_calls = false
       }
     }
   }

@@ -446,4 +446,69 @@ describe("reduceResponsesStream", () => {
     expect(msgStart.message.usage.input_tokens).toBe(0)
     expect(events[1].event).toBe("content_block_start")
   })
+
+  // FIX C: when the upstream stream is truncated after a buffered function_call
+  // but BEFORE response.created (and before any text), the post-loop truncation
+  // guard must still flush the buffered tool. The previous guard
+  // (`emitter.started && !emitter.terminalEmitted`) dropped the tool because
+  // `emitter.started` was false — the tool_use never reached the client.
+  test("truncated stream with only a buffered function_call still emits the tool_use block", async () => {
+    const events = await collect([
+      {
+        event: "response.output_item.added",
+        data: JSON.stringify({
+          type: "response.output_item.added",
+          item: { id: "fc_trunc", type: "function_call", status: "in_progress", arguments: "", call_id: "c", name: "f" },
+          output_index: 0,
+        }),
+      },
+      { event: "response.function_call_arguments.delta", data: JSON.stringify({ type: "response.function_call_arguments.delta", delta: '{"a":1}', item_id: "fc_trunc", output_index: 0 }) },
+      // stream just ends here — no response.created, no response.completed
+    ])
+
+    const types = events.map(e => e.event)
+    expect(types).toEqual([
+      "message_start",
+      "content_block_start",
+      "content_block_delta",
+      "content_block_delta",
+      "content_block_stop",
+      "message_delta",
+      "message_stop",
+    ])
+
+    const blockStart = events[1].data as {
+      type: string
+      index: number
+      content_block: { type: string; id: string; name: string }
+    }
+    expect(blockStart.content_block.type).toBe("tool_use")
+    expect(blockStart.content_block.id).toBe("c")
+    expect(blockStart.content_block.name).toBe("f")
+
+    // The JSON deltas must concatenate to '{"a":1}'
+    const argFragments: string[] = []
+    for (const e of events) {
+      const d = e.data as { delta?: { type?: string; partial_json?: string } }
+      if (d.delta?.type === "input_json_delta" && typeof d.delta.partial_json === "string") {
+        argFragments.push(d.delta.partial_json)
+      }
+    }
+    expect(argFragments.join("")).toBe('{"a":1}')
+
+    const msgDelta = events[events.length - 2].data as {
+      delta: { stop_reason: string }
+      usage: { output_tokens: number }
+    }
+    expect(msgDelta.delta.stop_reason).toBe("tool_use")
+    expect(msgDelta.usage.output_tokens).toBe(0)
+  })
+
+  // FIX C (companion): an entirely empty event stream emits nothing.
+  // The previous guard would also have emitted nothing in this case, but the
+  // new guard changes shape — lock in this property explicitly.
+  test("truncated stream with no events at all emits nothing", async () => {
+    const events = await collect([])
+    expect(events).toEqual([])
+  })
 })

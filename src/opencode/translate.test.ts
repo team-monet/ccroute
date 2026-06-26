@@ -197,6 +197,36 @@ describe("anthropicToOpenAI", () => {
     expect(result).not.toHaveProperty("tool_choice")
   })
 
+  // FIX A2: object-form tool_choice with disable_parallel_tool_use=true must
+  // set parallel_tool_calls=false on the outgoing OpenAI request, and map the
+  // tool_choice string/function form independently.
+  test("object-form {type:'any', disable_parallel_tool_use:true} maps tool_choice to 'required' and sets parallel_tool_calls=false", () => {
+    const result = anthropicToOpenAI(
+      { tool_choice: { type: "any", disable_parallel_tool_use: true }, messages: [] },
+      "x"
+    )
+    expect(result.tool_choice).toBe("required")
+    expect(result.parallel_tool_calls).toBe(false)
+  })
+
+  test("object-form {type:'auto'} without disable_parallel_tool_use leaves parallel_tool_calls undefined", () => {
+    const result = anthropicToOpenAI(
+      { tool_choice: { type: "auto" }, messages: [] },
+      "x"
+    )
+    expect(result.tool_choice).toBe("auto")
+    expect(result).not.toHaveProperty("parallel_tool_calls")
+  })
+
+  test("string-form tool_choice 'auto' leaves parallel_tool_calls undefined", () => {
+    const result = anthropicToOpenAI(
+      { tool_choice: "auto", messages: [] },
+      "x"
+    )
+    expect(result.tool_choice).toBe("auto")
+    expect(result).not.toHaveProperty("parallel_tool_calls")
+  })
+
   test("assistant single tool_use maps to tool_calls", () => {
     const result = anthropicToOpenAI(
       {
@@ -335,6 +365,47 @@ describe("anthropicToOpenAI", () => {
       tool_call_id: "call_1",
       content: "line1\nline2",
     })
+  })
+
+  // FIX B2: tool_result blocks with is_error:true must be forwarded with a
+  // "Tool error: " prefix so the target model knows the client-side tool
+  // failed (OpenAI Chat Completions has no native tool error field).
+  test("user tool_result with is_error:true prefixes content with 'Tool error: '", () => {
+    const result = anthropicToOpenAI(
+      {
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "tool_result", tool_use_id: "call_1", content: "boom", is_error: true },
+            ],
+          },
+        ],
+      },
+      "x"
+    )
+    const m = result.messages[0] as { role: string; content: string }
+    expect(m.content.startsWith("Tool error:")).toBe(true)
+    expect(m.content).toContain("boom")
+  })
+
+  test("user tool_result without is_error is unchanged (no 'Tool error:' prefix)", () => {
+    const result = anthropicToOpenAI(
+      {
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "tool_result", tool_use_id: "call_1", content: "ok" },
+            ],
+          },
+        ],
+      },
+      "x"
+    )
+    const m = result.messages[0] as { role: string; content: string }
+    expect(m.content).toBe("ok")
+    expect(m.content.startsWith("Tool error:")).toBe(false)
   })
 
   test("user turn with only tool_results does not emit an empty user message", () => {

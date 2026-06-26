@@ -192,6 +192,26 @@ describe("anthropicToResponses", () => {
       const result = anthropicToResponses({ messages: [] }, "x")
       expect(result.tool_choice).toBeUndefined()
     })
+
+    // FIX A1: object-form tool_choice with disable_parallel_tool_use=true must
+    // set parallel_tool_calls=false on the outgoing Responses request.
+    test("object-form {type:'auto', disable_parallel_tool_use:true} sets parallel_tool_calls=false", () => {
+      const result = anthropicToResponses(
+        { messages: [], tool_choice: { type: "auto", disable_parallel_tool_use: true } },
+        "x"
+      )
+      expect(result.tool_choice).toBe("auto")
+      expect(result.parallel_tool_calls).toBe(false)
+    })
+
+    test("object-form {type:'auto'} without disable_parallel_tool_use keeps parallel_tool_calls=true", () => {
+      const result = anthropicToResponses(
+        { messages: [], tool_choice: { type: "auto" } },
+        "x"
+      )
+      expect(result.tool_choice).toBe("auto")
+      expect(result.parallel_tool_calls).toBe(true)
+    })
   })
 
   describe("assistant tool_use blocks", () => {
@@ -357,6 +377,79 @@ describe("anthropicToResponses", () => {
           output: "(no content)",
         },
       ])
+    })
+
+    // FIX B1: tool_result blocks with is_error:true must be forwarded with a
+    // "Tool error: " prefix so the target model knows the client-side tool
+    // failed (the target APIs have no native error field).
+    test("is_error:true prefixes the output with 'Tool error: '", () => {
+      const result = anthropicToResponses(
+        {
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: "toolu_01",
+                  content: "boom",
+                  is_error: true,
+                },
+              ],
+            },
+          ],
+        },
+        "x"
+      )
+      const out = (result.input[0] as { output: string }).output
+      expect(out).toContain("Tool error:")
+      expect(out).toContain("boom")
+    })
+
+    test("tool_result without is_error is unchanged (no 'Tool error:' prefix)", () => {
+      const result = anthropicToResponses(
+        {
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: "toolu_01",
+                  content: "ok",
+                },
+              ],
+            },
+          ],
+        },
+        "x"
+      )
+      const out = (result.input[0] as { output: string }).output
+      expect(out).toBe("ok")
+      expect(out).not.toContain("Tool error:")
+    })
+
+    test("is_error:true with empty content prefixes '(no content)' fallback", () => {
+      const result = anthropicToResponses(
+        {
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: "toolu_01",
+                  content: "",
+                  is_error: true,
+                },
+              ],
+            },
+          ],
+        },
+        "x"
+      )
+      const out = (result.input[0] as { output: string }).output
+      expect(out).toBe("Tool error: (no content)")
     })
   })
 

@@ -110,7 +110,7 @@ export function anthropicToResponses(
     prompt_cache_key?: string
     metadata?: { session_id?: string }
     tools?: Array<{ name?: string; description?: string; input_schema?: Record<string, unknown> }>
-    tool_choice?: string | { type: string; name?: string }
+    tool_choice?: string | { type: string; name?: string; disable_parallel_tool_use?: boolean }
   }
 
   const result: ResponsesRequest = {
@@ -157,7 +157,7 @@ export function anthropicToResponses(
             pendingText += block.text
           } else if (block.type === "tool_result") {
             flushText()
-            const toolResultBlock = block as { tool_use_id?: string; content?: string | Array<{ type: string; text?: string }> }
+            const toolResultBlock = block as { tool_use_id?: string; content?: string | Array<{ type: string; text?: string }>; is_error?: boolean }
             const output = extractToolResultOutput(
               toolResultBlock.content ?? ""
             )
@@ -166,10 +166,11 @@ export function anthropicToResponses(
               warn("Skipping tool_result block with missing tool_use_id")
               continue
             }
+            const text = output || "(no content)"
             result.input.push({
               type: "function_call_output",
               call_id: toolUseId,
-              output: output || "(no content)",
+              output: toolResultBlock.is_error === true ? `Tool error: ${text}` : text,
             })
           } else if (block.type === "image") {
             warn("Skipping image content block in user message (not supported at v1)")
@@ -257,6 +258,9 @@ export function anthropicToResponses(
     const mappedChoice = mapToolChoice(b.tool_choice)
     if (mappedChoice !== undefined) {
       result.tool_choice = mappedChoice
+    }
+    if (typeof b.tool_choice === "object" && b.tool_choice !== null && b.tool_choice.disable_parallel_tool_use === true) {
+      result.parallel_tool_calls = false
     }
   }
 
