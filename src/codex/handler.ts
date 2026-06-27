@@ -3,8 +3,9 @@ import { anthropicError, redactSecrets } from "../errors"
 import { anthropicToResponses, injectCodexHeaders } from "./translate"
 import { reduceResponsesStream } from "./reducer"
 import { getValidToken, refreshAccessToken, saveTokens } from "./auth"
-import { warn } from "../logger"
+import { info, warn } from "../logger"
 import { sseToAnthropicStream } from "../sse-stream"
+import { tapResponse } from "../response-log"
 
 export async function handleCodexMessages(
   _req: Request,
@@ -35,19 +36,27 @@ export async function handleCodexMessages(
       injectCodexHeaders(headers, newTokens.accessToken, newTokens.chatgptAccountId)
       upstream = await fetchCodex(url, headers, upstreamBody)
     } catch (err) {
+      info("response", { upstream: "codex", upstreamModel: route.upstreamModelId, status: 401, bytes: 0, events: 0, sawContent: false })
       return anthropicError(401, "authentication_error", `Codex session expired and refresh failed: ${err}`)
     }
   }
   if (!upstream.ok) {
+    info("response", { upstream: "codex", upstreamModel: route.upstreamModelId, status: upstream.status, bytes: 0, events: 0, sawContent: false })
     const errBody = await upstream.text()
     return anthropicError(upstream.status, "api_error", `Codex upstream error: ${redactSecrets(errBody)}`)
   }
   if (!upstream.body) {
+    info("response", { upstream: "codex", upstreamModel: route.upstreamModelId, status: 502, bytes: 0, events: 0, sawContent: false })
     return anthropicError(502, "api_error", "Codex upstream returned no body")
   }
 
   const transformed = transformResponsesToAnthropic(upstream.body, route.upstreamModelId)
-  return new Response(transformed, {
+  const tapped = tapResponse(transformed, {
+    upstream: "codex",
+    upstreamModel: route.upstreamModelId,
+    status: 200,
+  })
+  return new Response(tapped, {
     status: 200,
     headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
   })

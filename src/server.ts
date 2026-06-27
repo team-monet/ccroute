@@ -8,6 +8,7 @@ import { reduceOpenAIStream } from "./opencode/reducer"
 import { hasApiKey as hasOpencodeKey, getApiKey as getOpencodeKey } from "./opencode/auth"
 import { handleCodexMessages } from "./codex/handler"
 import { sseToAnthropicStream } from "./sse-stream"
+import { tapResponse } from "./response-log"
 
 export function startServer(config: CcrouteConfig): { port: number; stop: () => void } {
   const server = Bun.serve({
@@ -108,13 +109,15 @@ async function handleOpencode(
       return anthropicError(502, "api_error", `Cannot reach OpenCode Go: ${err}`)
     }
     if (!upstream.ok) {
+      info("response", { upstream: "opencode", upstreamModel: route.upstreamModelId, status: upstream.status, bytes: 0, events: 0, sawContent: false })
       const errBody = await upstream.text()
       return anthropicError(upstream.status, "api_error", `OpenCode upstream error: ${redactSecrets(errBody)}`)
     }
     if (!upstream.body) {
+      info("response", { upstream: "opencode", upstreamModel: route.upstreamModelId, status: 502, bytes: 0, events: 0, sawContent: false })
       return anthropicError(502, "api_error", "OpenCode upstream returned no body")
     }
-    return new Response(upstream.body, {
+    return new Response(tapResponse(upstream.body, { upstream: "opencode", upstreamModel: route.upstreamModelId, status: 200 }), {
       status: 200,
       headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
     })
@@ -136,14 +139,16 @@ async function handleOpencode(
       return anthropicError(502, "api_error", `Cannot reach OpenCode Go: ${err}`)
     }
     if (!upstream.ok) {
+      info("response", { upstream: "opencode", upstreamModel: route.upstreamModelId, status: upstream.status, bytes: 0, events: 0, sawContent: false })
       const errBody = await upstream.text()
       return anthropicError(upstream.status, "api_error", `OpenCode upstream error: ${redactSecrets(errBody)}`)
     }
     if (!upstream.body) {
+      info("response", { upstream: "opencode", upstreamModel: route.upstreamModelId, status: 502, bytes: 0, events: 0, sawContent: false })
       return anthropicError(502, "api_error", "OpenCode upstream returned no body")
     }
     const transformed = transformOpenAIToAnthropic(upstream.body, route.upstreamModelId)
-    return new Response(transformed, {
+    return new Response(tapResponse(transformed, { upstream: "opencode", upstreamModel: route.upstreamModelId, status: 200 }), {
       status: 200,
       headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
     })
