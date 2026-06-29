@@ -132,27 +132,36 @@ export async function cmdCodexAuthLogout(): Promise<void> {
 }
 
 export async function cmdOpencodeAuthLogin(args: string[]): Promise<void> {
-  const fromArg = args[0] && args[0].trim() ? true : false
-  let key: string | null = fromArg ? args[0].trim() : null
-  if (!key) {
-    key = prompt("Enter your OpenCode Go API key (sk-...):")
-    if (key) key = key.trim()
+  const fromArg = args.some((a) => a && a.trim())
+  let keys: string[]
+  if (fromArg) {
+    keys = args.map((a) => (a ?? "").trim()).filter(Boolean)
+  } else {
+    keys = []
+    for (;;) {
+      const entered = prompt("Enter an OpenCode Go API key (sk-...), blank line to finish:")
+      const trimmed = entered ? entered.trim() : ""
+      if (!trimmed) break
+      keys.push(trimmed)
+    }
   }
-  if (!key) {
+  if (keys.length === 0) {
     console.log("No API key provided.")
     process.exit(1)
   }
   try {
-    const { setApiKey } = await import("./opencode/auth")
-    setApiKey(key)
+    const { setApiKeys, getApiKeys } = await import("./opencode/auth")
+    const existing = getApiKeys()
+    if (existing.length > 0) process.stderr.write(`note: replacing ${existing.length} existing key(s).\n`)
+    setApiKeys(keys)
   } catch (err) {
     console.log(err instanceof Error ? err.message : String(err))
     process.exit(1)
   }
   if (fromArg) {
-    process.stderr.write("note: passing the key as an argument leaves it in your shell history; prefer the interactive prompt next time.\n")
+    process.stderr.write("note: passing keys as arguments leaves them in your shell history; prefer the interactive prompt next time.\n")
   }
-  console.log("✓ OpenCode API key stored.")
+  console.log(`✓ Stored ${keys.length} OpenCode API key(s).`)
 }
 
 export async function cmdOpencodeAuthStatus(): Promise<void> {
@@ -161,8 +170,9 @@ export async function cmdOpencodeAuthStatus(): Promise<void> {
     const status = getAuthStatus()
     if (status.configured) {
       console.log("OpenCode auth: ✓ configured")
-      if (status.keyPreview) {
-        console.log(`  Key: ${status.keyPreview}`)
+      console.log(`  Keys (${status.keyCount}):`)
+      for (const preview of status.keyPreviews) {
+        console.log(`  - ${preview}`)
       }
     } else {
       console.log("OpenCode auth: ✗ not configured")
